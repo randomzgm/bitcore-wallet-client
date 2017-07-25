@@ -15,6 +15,7 @@ var util = require('util');
 var async = require('async');
 var events = require('events');
 var Bitcore = require('particl-bitcore-lib');
+var BN = require('particl-bitcore-lib/lib/crypto/bn');
 var Mnemonic = require('bitcore-mnemonic');
 var sjcl = require('sjcl');
 var url = require('url');
@@ -715,7 +716,7 @@ API.prototype.openWallet = function(cb) {
   if (self.credentials.isComplete() && self.credentials.hasWalletInfo())
     return cb(null, true);
 
-  self._doGetRequest('/v2/wallets/?includeExtendedInfo=1', function(err, ret) {
+  self._doGetRequest('/bws/api/v2/wallets/?includeExtendedInfo=1', function(err, ret) {
     if (err) return cb(err);
     var wallet = ret.wallet;
 
@@ -842,11 +843,11 @@ API.prototype._doRequest = function(method, url, args, useSession, cb) {
 };
 
 API.prototype._login = function(cb) {
-  this._doPostRequest('/v1/login', {}, cb);
+  this._doPostRequest('/bws/api/v1/login', {}, cb);
 };
 
 API.prototype._logout = function(cb) {
-  this._doPostRequest('/v1/logout', {}, cb);
+  this._doPostRequest('/bws/api/v1/logout', {}, cb);
 };
 
 /**
@@ -999,6 +1000,11 @@ API.signTxp = function(txp, derivedXPrivKey) {
   });
 
   var t = Utils.buildTx(txp);
+  
+  t.bnInputAmounts = [];
+  _.each(txp.inputs, function(input) {
+    t.bnInputAmounts.push(new BN(input.satoshis));
+  });
 
   var signatures = _.map(privs, function(priv, i) {
     return t.getSignatures(priv);
@@ -1108,7 +1114,7 @@ API.prototype._doJoinWallet = function(walletId, walletPrivKey, xPubKey, request
   var hash = Utils.getCopayerHash(args.name, args.xPubKey, args.requestPubKey);
   args.copayerSignature = Utils.signMessage(hash, walletPrivKey);
 
-  var url = '/v2/wallets/' + walletId + '/copayers';
+  var url = '/bws/api/v2/wallets/' + walletId + '/copayers';
   this._doPostRequest(url, args, function(err, body) {
     if (err) return cb(err);
     self._processWallet(body.wallet);
@@ -1229,7 +1235,7 @@ API.prototype.getFeeLevels = function(network, cb) {
 
   $.checkArgument(network || _.includes(['livenet', 'testnet'], network));
 
-  self._doGetRequest('/v1/feelevels/?network=' + (network || 'livenet'), function(err, result) {
+  self._doGetRequest('/bws/api/v1/feelevels/?network=' + (network || 'livenet'), function(err, result) {
     if (err) return cb(err);
     return cb(err, result);
   });
@@ -1241,7 +1247,7 @@ API.prototype.getFeeLevels = function(network, cb) {
  * @param {Callback} cb
  */
 API.prototype.getVersion = function(cb) {
-  this._doGetRequest('/v1/version/', cb);
+  this._doGetRequest('/bws/api/v1/version/', cb);
 };
 
 API.prototype._checkKeyDerivation = function() {
@@ -1306,7 +1312,7 @@ API.prototype.createWallet = function(walletName, copayerName, m, n, opts, cb) {
     singleAddress: !!opts.singleAddress,
     id: opts.id,
   };
-  self._doPostRequest('/v2/wallets/', args, function(err, res) {
+  self._doPostRequest('/bws/api/v2/wallets/', args, function(err, res) {
     if (err) return cb(err);
 
     var walletId = res.walletId;
@@ -1406,7 +1412,7 @@ API.prototype.recreateWallet = function(cb) {
       supportBIP44AndP2PKH: supportBIP44AndP2PKH,
     };
 
-    self._doPostRequest('/v2/wallets/', args, function(err, body) {
+    self._doPostRequest('/bws/api/v2/wallets/', args, function(err, body) {
       if (err) {
         if (!(err instanceof Errors.WALLET_ALREADY_EXISTS))
           return cb(err);
@@ -1515,7 +1521,7 @@ API.prototype.getNotifications = function(opts, cb) {
   var self = this;
   opts = opts || {};
 
-  var url = '/v1/notifications/';
+  var url = '/bws/api/v1/notifications/';
   if (opts.lastNotificationId) {
     url += '?notificationId=' + opts.lastNotificationId;
   } else if (opts.timeSpan) {
@@ -1556,7 +1562,7 @@ API.prototype.getStatus = function(opts, cb) {
   qs.push('includeExtendedInfo=' + (opts.includeExtendedInfo ? '1' : '0'));
   qs.push('twoStep=' + (opts.twoStep ? '1' : '0'));
 
-  self._doGetRequest('/v2/wallets/?' + qs.join('&'), function(err, result) {
+  self._doGetRequest('/bws/api/v2/wallets/?' + qs.join('&'), function(err, result) {
     if (err) return cb(err);
     if (result.wallet.status == 'pending') {
       var c = self.credentials;
@@ -1580,7 +1586,7 @@ API.prototype.getPreferences = function(cb) {
   $.checkArgument(cb);
 
   var self = this;
-  self._doGetRequest('/v1/preferences/', function(err, preferences) {
+  self._doGetRequest('/bws/api/v1/preferences/', function(err, preferences) {
     if (err) return cb(err);
     return cb(null, preferences);
   });
@@ -1598,7 +1604,7 @@ API.prototype.savePreferences = function(preferences, cb) {
   $.checkArgument(cb);
 
   var self = this;
-  self._doPutRequest('/v1/preferences/', preferences, cb);
+  self._doPutRequest('/bws/api/v1/preferences/', preferences, cb);
 };
 
 
@@ -1638,7 +1644,7 @@ API.prototype.fetchPayPro = function(opts, cb) {
 API.prototype.getUtxos = function(opts, cb) {
   $.checkState(this.credentials && this.credentials.isComplete());
   opts = opts || {};
-  var url = '/v1/utxos/';
+  var url = '/bws/api/v1/utxos/';
   if (opts.addresses) {
     url += '?' + querystring.stringify({
       addresses: [].concat(opts.addresses).join(',')
@@ -1692,7 +1698,7 @@ API.prototype.createTxProposal = function(opts, cb) {
 
   var args = self._getCreateTxProposalArgs(opts);
 
-  self._doPostRequest('/v2/txproposals/', args, function(err, txp) {
+  self._doPostRequest('/bws/api/v2/txproposals/', args, function(err, txp) {
     if (err) return cb(err);
 
     self._processTxps(txp);
@@ -1727,7 +1733,7 @@ API.prototype.publishTxProposal = function(opts, cb) {
     proposalSignature: Utils.signMessage(hash, self.credentials.requestPrivKey)
   };
 
-  var url = '/v1/txproposals/' + opts.txp.id + '/publish/';
+  var url = '/bws/api/v1/txproposals/' + opts.txp.id + '/publish/';
   self._doPostRequest(url, args, function(err, txp) {
     if (err) return cb(err);
     self._processTxps(txp);
@@ -1793,7 +1799,7 @@ API.prototype.getMainAddresses = function(opts, cb) {
   if (args.length > 0) {
     qs = '?' + args.join('&');
   }
-  var url = '/v1/addresses/' + qs;
+  var url = '/bws/api/v1/addresses/' + qs;
 
   self._doGetRequest(url, function(err, addresses) {
     if (err) return cb(err);
@@ -1826,7 +1832,7 @@ API.prototype.getBalance = function(opts, cb) {
   opts = opts || {};
 
   $.checkState(this.credentials && this.credentials.isComplete());
-  var url = '/v1/balance/';
+  var url = '/bws/api/v1/balance/';
   if (opts.twoStep) url += '?twoStep=1';
   this._doGetRequest(url, cb);
 };
@@ -1845,7 +1851,7 @@ API.prototype.getTxProposals = function(opts, cb) {
 
   var self = this;
 
-  self._doGetRequest('/v1/txproposals/', function(err, txps) {
+  self._doGetRequest('/bws/api/v1/txproposals/', function(err, txps) {
     if (err) return cb(err);
 
     self._processTxps(txps);
@@ -1945,7 +1951,7 @@ API.prototype.signTxProposal = function(txp, password, cb) {
       }
     }
 
-    var url = '/v1/txproposals/' + txp.id + '/signatures/';
+    var url = '/bws/api/v1/txproposals/' + txp.id + '/signatures/';
     var args = {
       signatures: signatures
     };
@@ -2071,7 +2077,7 @@ API.prototype.rejectTxProposal = function(txp, reason, cb) {
 
   var self = this;
 
-  var url = '/v1/txproposals/' + txp.id + '/rejections/';
+  var url = '/bws/api/v1/txproposals/' + txp.id + '/rejections/';
   var args = {
     reason: API._encryptMessage(reason, self.credentials.sharedEncryptingKey) || '',
   };
@@ -2099,7 +2105,7 @@ API.prototype.broadcastRawTx = function(opts, cb) {
 
   opts = opts || {};
 
-  var url = '/v1/broadcast_raw/';
+  var url = '/bws/api/v1/broadcast_raw/';
   self._doPostRequest(url, opts, function(err, txid) {
     if (err) return cb(err);
     return cb(null, txid);
@@ -2108,7 +2114,7 @@ API.prototype.broadcastRawTx = function(opts, cb) {
 
 API.prototype._doBroadcast = function(txp, cb) {
   var self = this;
-  var url = '/v1/txproposals/' + txp.id + '/broadcast/';
+  var url = '/bws/api/v1/txproposals/' + txp.id + '/broadcast/';
   self._doPostRequest(url, {}, function(err, txp) {
     if (err) return cb(err);
     self._processTxps(txp);
@@ -2171,7 +2177,7 @@ API.prototype.removeTxProposal = function(txp, cb) {
 
   var self = this;
 
-  var url = '/v1/txproposals/' + txp.id;
+  var url = '/bws/api/v1/txproposals/' + txp.id;
   self._doDeleteRequest(url, function(err) {
     return cb(err);
   });
@@ -2202,7 +2208,7 @@ API.prototype.getTxHistory = function(opts, cb) {
     qs = '?' + args.join('&');
   }
 
-  var url = '/v1/txhistory/' + qs;
+  var url = '/bws/api/v1/txhistory/' + qs;
   self._doGetRequest(url, function(err, txs) {
     if (err) return cb(err);
     self._processTxps(txs);
@@ -2220,7 +2226,7 @@ API.prototype.getTx = function(id, cb) {
   $.checkState(this.credentials && this.credentials.isComplete());
 
   var self = this;
-  var url = '/v1/txproposals/' + id;
+  var url = '/bws/api/v1/txproposals/' + id;
   this._doGetRequest(url, function(err, txp) {
     if (err) return cb(err);
 
@@ -2247,7 +2253,7 @@ API.prototype.startScan = function(opts, cb) {
     includeCopayerBranches: opts.includeCopayerBranches,
   };
 
-  self._doPostRequest('/v1/addresses/scan', args, function(err) {
+  self._doPostRequest('/bws/api/v1/addresses/scan', args, function(err) {
     return cb(err);
   });
 };
@@ -2286,7 +2292,7 @@ API.prototype.addAccess = function(opts, cb) {
     restrictions: opts.restrictions,
   };
 
-  this._doPutRequest('/v1/copayers/' + copayerId + '/', opts, function(err, res) {
+  this._doPutRequest('/bws/api/v1/copayers/' + copayerId + '/', opts, function(err, res) {
     if (err) return cb(err);
     return cb(null, res.wallet, reqPrivKey);
   });
@@ -2303,7 +2309,7 @@ API.prototype.getTxNote = function(opts, cb) {
   var self = this;
 
   opts = opts || {};
-  self._doGetRequest('/v1/txnotes/' + opts.txid + '/', function(err, note) {
+  self._doGetRequest('/bws/api/v1/txnotes/' + opts.txid + '/', function(err, note) {
     if (err) return cb(err);
     self._processTxNotes(note);
     return cb(null, note);
@@ -2325,7 +2331,7 @@ API.prototype.editTxNote = function(opts, cb) {
   if (opts.body) {
     opts.body = API._encryptMessage(opts.body, this.credentials.sharedEncryptingKey);
   }
-  self._doPutRequest('/v1/txnotes/' + opts.txid + '/', opts, function(err, note) {
+  self._doPutRequest('/bws/api/v1/txnotes/' + opts.txid + '/', opts, function(err, note) {
     if (err) return cb(err);
     self._processTxNotes(note);
     return cb(null, note);
@@ -2352,7 +2358,7 @@ API.prototype.getTxNotes = function(opts, cb) {
     qs = '?' + args.join('&');
   }
 
-  self._doGetRequest('/v1/txnotes/' + qs, function(err, notes) {
+  self._doGetRequest('/bws/api/v1/txnotes/' + qs, function(err, notes) {
     if (err) return cb(err);
     self._processTxNotes(notes);
     return cb(null, notes);
@@ -2383,7 +2389,7 @@ API.prototype.getFiatRate = function(opts, cb) {
     qs = '?' + args.join('&');
   }
 
-  self._doGetRequest('/v1/fiatrates/' + opts.code + '/' + qs, function(err, rates) {
+  self._doGetRequest('/bws/api/v1/fiatrates/' + opts.code + '/' + qs, function(err, rates) {
     if (err) return cb(err);
     return cb(null, rates);
   });
@@ -2397,7 +2403,7 @@ API.prototype.getFiatRate = function(opts, cb) {
  * @returns {Object} response - Status of subscription.
  */
 API.prototype.pushNotificationsSubscribe = function(opts, cb) {
-  var url = '/v1/pushnotifications/subscriptions/';
+  var url = '/bws/api/v1/pushnotifications/subscriptions/';
   this._doPostRequest(url, opts, function(err, response) {
     if (err) return cb(err);
     return cb(null, response);
@@ -2410,7 +2416,7 @@ API.prototype.pushNotificationsSubscribe = function(opts, cb) {
  * @return {Callback} cb - Return error if exists
  */
 API.prototype.pushNotificationsUnsubscribe = function(token, cb) {
-  var url = '/v2/pushnotifications/subscriptions/' + token;
+  var url = '/bws/api/v2/pushnotifications/subscriptions/' + token;
   this._doDeleteRequest(url, cb);
 };
 
@@ -2421,7 +2427,7 @@ API.prototype.pushNotificationsUnsubscribe = function(token, cb) {
  * @returns {Object} response - Status of subscription.
  */
 API.prototype.txConfirmationSubscribe = function(opts, cb) {
-  var url = '/v1/txconfirmations/';
+  var url = '/bws/api/v1/txconfirmations/';
   this._doPostRequest(url, opts, function(err, response) {
     if (err) return cb(err);
     return cb(null, response);
@@ -2434,7 +2440,7 @@ API.prototype.txConfirmationSubscribe = function(opts, cb) {
  * @return {Callback} cb - Return error if exists
  */
 API.prototype.txConfirmationUnsubscribe = function(txid, cb) {
-  var url = '/v1/txconfirmations/' + txid;
+  var url = '/bws/api/v1/txconfirmations/' + txid;
   this._doDeleteRequest(url, cb);
 };
 
@@ -2462,7 +2468,7 @@ API.prototype.getSendMaxInfo = function(opts, cb) {
   if (args.length > 0)
     qs = '?' + args.join('&');
 
-  var url = '/v1/sendmaxinfo/' + qs;
+  var url = '/bws/api/v1/sendmaxinfo/' + qs;
 
   self._doGetRequest(url, function(err, result) {
     if (err) return cb(err);
@@ -2488,7 +2494,7 @@ API.prototype.getStatusByIdentifier = function(opts, cb) {
   qs.push('includeExtendedInfo=' + (opts.includeExtendedInfo ? '1' : '0'));
   qs.push('twoStep=' + (opts.twoStep ? '1' : '0'));
 
-  self._doGetRequest('/v1/wallets/' + opts.identifier + '?' + qs.join('&'), function(err, result) {
+  self._doGetRequest('/bws/api/v1/wallets/' + opts.identifier + '?' + qs.join('&'), function(err, result) {
     if (err || !result || !result.wallet) return cb(err);
     if (result.wallet.status == 'pending') {
       var c = self.credentials;
@@ -2568,7 +2574,7 @@ API.prototype.createWalletFromOldCopay = function(username, password, blob, cb) 
 module.exports = API;
 
 }).call(this,require("buffer").Buffer)
-},{"../package.json":310,"./common":5,"./credentials":7,"./errors":8,"./log":11,"./paypro":12,"./verifier":13,"async":30,"bip38":36,"bitcore-mnemonic":37,"buffer":84,"events":129,"json-stable-stringify":151,"lodash":156,"particl-bitcore-lib":166,"preconditions":243,"querystring":260,"sjcl":286,"superagent":293,"url":302,"util":307}],3:[function(require,module,exports){
+},{"../package.json":310,"./common":5,"./credentials":7,"./errors":8,"./log":11,"./paypro":12,"./verifier":13,"async":30,"bip38":36,"bitcore-mnemonic":37,"buffer":84,"events":129,"json-stable-stringify":151,"lodash":156,"particl-bitcore-lib":166,"particl-bitcore-lib/lib/crypto/bn":172,"preconditions":243,"querystring":260,"sjcl":286,"superagent":293,"url":302,"util":307}],3:[function(require,module,exports){
 'use strict';
 
 var Constants = {};
@@ -3053,7 +3059,7 @@ Credentials.fromExtendedPublicKey = function(xPubKey, source, entropySourceHex, 
 // Get network from extended private key or extended public key
 Credentials._getNetworkFromExtendedKey = function(xKey) {
   $.checkArgument(xKey && _.isString(xKey));
-  return xKey.charAt(0) == 't' ? 'testnet' : 'livenet';
+  return xKey.charAt(0) == 'x' ? 'testnet' : 'livenet';
 };
 
 Credentials._xPubToCopayerId = function(xpub) {
@@ -4056,7 +4062,6 @@ Verifier.checkTxProposalSignature = function(credentials, txp) {
 
   // If the txp using a selfsigned pub key?
   if (txp.proposalSignaturePubKey) {
-
     // Verify it...
     if (!Utils.verifyRequestPubKey(txp.proposalSignaturePubKey, txp.proposalSignaturePubKeySig, creatorKeys.xPubKey))
       return false;
@@ -4077,6 +4082,7 @@ Verifier.checkTxProposalSignature = function(credentials, txp) {
   }
 
   log.debug('Regenerating & verifying tx proposal hash -> Hash: ', hash, ' Signature: ', txp.proposalSignature);
+  
   if (!Utils.verifyMessage(hash, txp.proposalSignature, creatorSigningPubKey))
     return false;
 
@@ -50774,7 +50780,7 @@ HDPublicKey.getSerializedError = function(data, network) {
       return error;
     }
   }
-  var version = parseInt(BufferUtil.bufferToHex(data.slice(0, 4)), 16);
+  var version = BufferUtil.integerFromBuffer(data.slice(0, 4));
   if (version === Network.livenet.xprivkey || version === Network.testnet.xprivkey ) {
     return new hdErrors.ArgumentIsPrivateExtended();
   }
@@ -50787,7 +50793,7 @@ HDPublicKey._validateNetwork = function(data, networkArg) {
     return new errors.InvalidNetworkArgument(networkArg);
   }
   var version = data.slice(HDPublicKey.VersionStart, HDPublicKey.VersionEnd);
-  if (parseInt(BufferUtil.bufferToHex(version), 16) !== network.xpubkey) {
+  if (BufferUtil.integerFromBuffer(version) !== network.xpubkey) {
     return new errors.InvalidNetwork(version);
   }
   return null;
@@ -50797,7 +50803,7 @@ HDPublicKey.prototype._buildFromPrivate = function (arg) {
   var args = _.clone(arg._buffers);
   var point = Point.getG().mul(BN.fromBuffer(args.privateKey));
   args.publicKey = Point.pointToCompressed(point);
-  args.version = BufferUtil.integerAsBuffer(Network.get(parseInt(BufferUtil.bufferToHex(args.version), 16)).xpubkey);
+  args.version = BufferUtil.integerAsBuffer(Network.get(BufferUtil.integerFromBuffer(args.version)).xpubkey);
   args.privateKey = undefined;
   args.checksum = undefined;
   args.xprivkey = undefined;
@@ -50875,7 +50881,7 @@ HDPublicKey.prototype._buildFromBuffers = function(arg) {
       throw new errors.InvalidB58Checksum(concat, checksum);
     }
   }
-  var network = Network.get(parseInt(BufferUtil.bufferToHex(arg.version), 16));
+  var network = Network.get(BufferUtil.integerFromBuffer(arg.version));
 
   var xpubkey;
   xpubkey = Base58Check.encode(BufferUtil.concat(sequence));
@@ -50892,6 +50898,7 @@ HDPublicKey.prototype._buildFromBuffers = function(arg) {
     publicKey: publicKey,
     fingerPrint: fingerPrint
   });
+
   return this;
 };
 
@@ -50960,7 +50967,7 @@ HDPublicKey.prototype.inspect = function() {
  */
 HDPublicKey.prototype.toObject = HDPublicKey.prototype.toJSON = function toObject() {
   return {
-    network: Network.get(parseInt(BufferUtil.bufferToHex(this._buffers.version), 16).name),
+    network: Network.get(BufferUtil.integerFromBuffer(this._buffers.version)).name,
     depth: BufferUtil.integerFromSingleByteBuffer(this._buffers.depth),
     fingerPrint: BufferUtil.integerFromBuffer(this.fingerPrint),
     parentFingerPrint: BufferUtil.integerFromBuffer(this._buffers.parentFingerPrint),
@@ -54859,7 +54866,9 @@ Input.prototype.toBufferWriter = function(writer) {
   }
   writer.writeReverse(this.prevTxId);
   writer.writeUInt32LE(this.outputIndex);
-  var script = this._scriptBuffer;
+  //var script = this._scriptBuffer;
+  var script = new buffer.Buffer([]);
+    
   writer.writeVarintNum(script.length);
   writer.write(script);
   writer.writeUInt32LE(this.sequenceNumber);
@@ -54898,6 +54907,14 @@ Input.prototype.setScript = function(script) {
   } else {
     throw new TypeError('Invalid argument type: script');
   }
+  return this;
+};
+
+Input.prototype.setWitness = function(witnessStack) {
+  
+  this.dataStack = [];
+  this.witnessStack = witnessStack;
+  
   return this;
 };
 
@@ -55055,6 +55072,7 @@ MultiSigInput.prototype.addSignature = function(transaction, signature) {
   $.checkState(this.isValidSignature(transaction, signature));
   this.signatures[this.publicKeyIndex[signature.publicKey.toString()]] = signature;
   this._updateScript();
+  
   return this;
 };
 
@@ -55182,6 +55200,7 @@ var inherits = require('inherits');
 var Input = require('./input');
 var Output = require('../output');
 var $ = require('../../util/preconditions');
+var buffer = require('buffer');
 
 var Script = require('../../script');
 var Signature = require('../../crypto/signature');
@@ -55235,7 +55254,8 @@ MultiSigScriptHashInput.prototype._serializeSignatures = function() {
     if (!signature) {
       return undefined;
     }
-    return signature.toObject();
+    return null;
+    //return signature.toObject();
   });
 };
 
@@ -55264,19 +55284,38 @@ MultiSigScriptHashInput.prototype.addSignature = function(transaction, signature
   $.checkState(!this.isFullySigned(), 'All needed signatures have already been added');
   $.checkArgument(!_.isUndefined(this.publicKeyIndex[signature.publicKey.toString()]),
                   'Signature has no matching public key');
-  $.checkState(this.isValidSignature(transaction, signature));
+
+  $.checkState(this.isValidSignature(transaction, signature)); // Need total input value (transaction.bnInputAmounts)
   this.signatures[this.publicKeyIndex[signature.publicKey.toString()]] = signature;
   this._updateScript();
   return this;
 };
 
 MultiSigScriptHashInput.prototype._updateScript = function() {
+
+  var witnessStack = [];
+  witnessStack.push(new buffer.Buffer([])); // Hack
+
+  var sigs = this._createSignatures();
+
+  _.each(sigs, function(signature) {
+    $.checkArgument(BufferUtil.isBuffer(signature), 'Signatures must be an array of Buffers');
+    // TODO: allow signatures to be an array of Signature objects
+    witnessStack.push(signature)
+  });
+
+  var opts = {};
+
+  witnessStack.push((this.redeemScript || Script.buildMultisigOut(this.pubkeys, this.threshold, opts)).toBuffer());
+  this.setWitness(witnessStack);
+  /*
   this.setScript(Script.buildP2SHMultisigIn(
     this.publicKeys,
     this.threshold,
     this._createSignatures(),
     { cachedMultisig: this.redeemScript }
   ));
+  */
   return this;
 };
 
@@ -55321,6 +55360,7 @@ MultiSigScriptHashInput.prototype.publicKeysWithoutSignature = function() {
 MultiSigScriptHashInput.prototype.isValidSignature = function(transaction, signature) {
   // FIXME: Refactor signature so this is not necessary
   signature.signature.nhashtype = signature.sigtype;
+
   return Sighash.verify(
       transaction,
       signature.signature,
@@ -55342,7 +55382,7 @@ MultiSigScriptHashInput.prototype._estimateSize = function() {
 
 module.exports = MultiSigScriptHashInput;
 
-},{"../../crypto/signature":177,"../../publickey":190,"../../script":191,"../../util/buffer":208,"../../util/preconditions":210,"../output":201,"../sighash":202,"../signature":203,"./input":196,"inherits":235,"lodash":236}],199:[function(require,module,exports){
+},{"../../crypto/signature":177,"../../publickey":190,"../../script":191,"../../util/buffer":208,"../../util/preconditions":210,"../output":201,"../sighash":202,"../signature":203,"./input":196,"buffer":84,"inherits":235,"lodash":236}],199:[function(require,module,exports){
 'use strict';
 
 var inherits = require('inherits');
@@ -55497,11 +55537,15 @@ PublicKeyHashInput.prototype.getSignatures = function(transaction, privateKey, i
  */
 PublicKeyHashInput.prototype.addSignature = function(transaction, signature) {
   $.checkState(this.isValidSignature(transaction, signature), 'Signature is invalid');
-  this.setScript(Script.buildPublicKeyHashIn(
-    signature.publicKey,
-    signature.signature.toDER(),
-    signature.sigtype
-  ));
+
+  this.setWitness([
+    BufferUtil.concat([
+      signature.signature.toDER(),
+      BufferUtil.integerAsSingleByteBuffer(signature.sigtype)
+    ]),
+    signature.publicKey.toBuffer()
+  ]);
+
   return this;
 };
 
@@ -55510,7 +55554,8 @@ PublicKeyHashInput.prototype.addSignature = function(transaction, signature) {
  * @return {PublicKeyHashInput} this, for chaining
  */
 PublicKeyHashInput.prototype.clearSignatures = function() {
-  this.setScript(Script.empty());
+  this.setWitness([]);
+
   return this;
 };
 
@@ -55785,12 +55830,18 @@ Output.fromBufferReader = function(br) {
   return new Output(obj);
 };
 
-Output.prototype.toBufferWriter = function(writer, includeWitness) {
+Output.prototype.toBufferWriter = function(writer, includeWitness, includeType) {
   if (!writer) {
     writer = new BufferWriter();
   }
 
-  writer.writeUInt8(this.type);
+  if (!_.isUndefined(includeType) // default value isn't working
+    && includeType != true)
+  {
+  } else
+  {
+    writer.writeUInt8(this.type);
+  }
   switch(this.type)
   {
     case OUTPUT_TYPES.OUTPUT_STANDARD:
@@ -55854,7 +55905,6 @@ module.exports = Output;
 
 }).call(this,require('_process'))
 },{"../crypto/bn":172,"../encoding/bufferwriter":181,"../errors":183,"../script":191,"../util/buffer":208,"../util/js":209,"../util/preconditions":210,"_process":249,"buffer":84,"lodash":236}],202:[function(require,module,exports){
-(function (Buffer){
 'use strict';
 
 var buffer = require('buffer');
@@ -55887,6 +55937,66 @@ var sighash = function sighash(transaction, sighashType, inputNumber, subscript)
   var Transaction = require('./transaction');
   var Input = require('./input');
 
+  var writer;
+
+  writer = new BufferWriter();
+  _.each(transaction.inputs, function(input) {
+    writer.writeReverse(input.prevTxId);
+    writer.writeUInt32LE(input.outputIndex);
+  });
+  var hashPrevouts = Hash.sha256sha256(writer.toBuffer());
+
+  writer = new BufferWriter();
+  _.each(transaction.inputs, function(input) {
+    writer.writeUInt32LE(input.sequenceNumber);
+  });
+  var hashSequence = Hash.sha256sha256(writer.toBuffer());
+
+  writer = new BufferWriter();
+  _.each(transaction.outputs, function(output) {
+    output.toBufferWriter(writer, false, false);
+  });
+  var hashOutputs = Hash.sha256sha256(writer.toBuffer());
+
+  writer = new BufferWriter();
+
+  var numV = transaction.version;
+  writer.writeUInt32LE(numV)
+
+  writer.write(hashPrevouts);
+  writer.write(hashSequence);
+
+  var ini = transaction.inputs[inputNumber];
+  writer.writeReverse(ini.prevTxId);
+  writer.writeUInt32LE(ini.outputIndex);
+
+  subscript = new Script(subscript);
+  subscript.removeCodeseparators();
+  var scriptBuffer = subscript.toBuffer()
+  writer.writeVarintNum(scriptBuffer.length);
+  writer.write(scriptBuffer);
+
+  // amount
+  if (transaction.bnInputAmounts) {
+    writer.writeUInt64LEBN(transaction.bnInputAmounts[inputNumber]);
+  } else {
+    writer.writeUInt64LEBN(ini.output._satoshisBN);
+  }
+
+  writer.writeUInt32LE(ini.sequenceNumber);
+  // Outputs (none/one/all, depending on flags)
+  writer.write(hashOutputs);
+  // Locktime
+  writer.writeUInt32LE(transaction.nLockTime);
+  // Sighash type
+  writer.writeInt32LE(sighashType)
+
+  var ret = Hash.sha256sha256(writer.toBuffer());
+  ret = new BufferReader(ret).readReverse();
+
+  return ret;
+
+  /*
   var i;
   // Copy transaction
   var txcopy = Transaction.shallowCopy(transaction);
@@ -55938,12 +56048,14 @@ var sighash = function sighash(transaction, sighashType, inputNumber, subscript)
   }
 
   var buf = new BufferWriter()
-    .write(txcopy.toBuffer())
+    .write(txcopy.toBuffer(false))
     .writeInt32LE(sighashType)
     .toBuffer();
   var ret = Hash.sha256sha256(buf);
   ret = new BufferReader(ret).readReverse();
+
   return ret;
+  */
 };
 
 /**
@@ -55962,6 +56074,7 @@ function sign(transaction, privateKey, sighashType, inputIndex, subscript) {
   var sig = ECDSA.sign(hashbuf, privateKey, 'little').set({
     nhashtype: sighashType
   });
+
   return sig;
 }
 
@@ -55979,7 +56092,9 @@ function sign(transaction, privateKey, sighashType, inputIndex, subscript) {
 function verify(transaction, signature, publicKey, inputIndex, subscript) {
   $.checkArgument(!_.isUndefined(transaction));
   $.checkArgument(!_.isUndefined(signature) && !_.isUndefined(signature.nhashtype));
+
   var hashbuf = sighash(transaction, signature.nhashtype, inputIndex, subscript);
+
   return ECDSA.verify(hashbuf, signature, publicKey, 'little');
 }
 
@@ -55992,7 +56107,6 @@ module.exports = {
   verify: verify
 };
 
-}).call(this,require("buffer").Buffer)
 },{"../crypto/bn":172,"../crypto/ecdsa":173,"../crypto/hash":174,"../crypto/signature":177,"../encoding/bufferreader":180,"../encoding/bufferwriter":181,"../script":191,"../util/preconditions":210,"./input":195,"./output":201,"./transaction":204,"buffer":84,"lodash":236}],203:[function(require,module,exports){
 (function (Buffer){
 'use strict';
@@ -56148,9 +56262,9 @@ function Transaction(serialized) {
   }
 }
 
-var CURRENT_VERSION = 1;
+var CURRENT_VERSION = 160;
 var DEFAULT_NLOCKTIME = 0;
-var MAX_BLOCK_SIZE = 1000000;
+var MAX_BLOCK_SIZE = 4000000;
 
 // Minimum amount for an output for it not to be considered a dust output
 Transaction.DUST_AMOUNT = 546;
@@ -56382,6 +56496,7 @@ Transaction.prototype.toBufferWriter = function(writer, includeWitness) {
   _.each(this.outputs, function(output) {
     output.toBufferWriter(writer, includeWitness);
   });
+  
   if (!_.isUndefined(includeWitness) // default value isn't working
     && includeWitness != true)
     return writer;
@@ -56469,6 +56584,7 @@ Transaction.prototype.toObject = Transaction.prototype.toJSON = function toObjec
 };
 
 Transaction.prototype.fromObject = function fromObject(arg) {
+  
   /* jshint maxstatements: 20 */
   $.checkArgument(_.isObject(arg) || arg instanceof Transaction);
   var self = this;
@@ -56510,6 +56626,7 @@ Transaction.prototype.fromObject = function fromObject(arg) {
   if (transaction.fee) {
     this._fee = transaction.fee;
   }
+  
   this.nLockTime = transaction.nLockTime;
   this.version = transaction.version;
   this._checkConsistency(arg);
@@ -56921,6 +57038,8 @@ Transaction.prototype.clearOutputs = function() {
 
 
 Transaction.prototype._addOutput = function(output) {
+  //output.type = Output.OUTPUT_TYPES.OUTPUT_STANDARD;
+  output.type = 1;
   this.outputs.push(output);
   this._outputAmount = undefined;
 };
@@ -58046,7 +58165,7 @@ module.exports = {
    */
   integerFromBuffer: function integerFromBuffer(buffer) {
     $.checkArgumentType(buffer, 'Buffer', 'buffer');
-    return buffer[0] << 24 | buffer[1] << 16 | buffer[2] << 8 | buffer[3];
+    return (buffer[0] << 24 | buffer[1] << 16 | buffer[2] << 8 | buffer[3]) >>> 0;
   },
 
   /**
@@ -64513,8 +64632,8 @@ module.exports={
     "/bitcore-payment-protocol",
     "/bitcore-wallet-service"
   ],
-  "_resolved": "git+ssh://git@github.com/particl/particl-bitcore-lib.git#b3fac54ac6df8bc263cf03c2b32b3ca75a186c37",
-  "_shasum": "dd2c48c6129b336e373679f0f0509b4d8edd5d76",
+  "_resolved": "git+ssh://git@github.com/particl/particl-bitcore-lib.git#b980b72fc1b0e0df87cc8f54845aa62c194e680e",
+  "_shasum": "749e4786208b282ccff214a371e74b413330913b",
   "_shrinkwrap": {
     "name": "bitcore",
     "version": "0.13.19",
@@ -64637,7 +64756,7 @@ module.exports={
     "gulp": "^3.8.10",
     "sinon": "^1.13.0"
   },
-  "gitHead": "b3fac54ac6df8bc263cf03c2b32b3ca75a186c37",
+  "gitHead": "b980b72fc1b0e0df87cc8f54845aa62c194e680e",
   "homepage": "https://github.com/particl/particl-bitcore-lib#readme",
   "keywords": [
     "particl",
@@ -87303,9 +87422,9 @@ module.exports={
   "dependencies": {
     "async": "^0.9.0",
     "bip38": "^1.3.0",
-    "particl-bitcore-lib": "git@github.com:particl/particl-bitcore-lib.git",
-    "bitcore-mnemonic": "git@github.com:particl/bitcore-mnemonic.git",
-    "bitcore-payment-protocol": "git@github.com:particl/bitcore-payment-protocol.git",
+    "particl-bitcore-lib": "git://github.com/particl/particl-bitcore-lib.git",
+    "bitcore-mnemonic": "git://github.com/particl/bitcore-mnemonic.git",
+    "bitcore-payment-protocol": "git://github.com/particl/bitcore-payment-protocol.git",
     "json-stable-stringify": "^1.0.0",
     "lodash": "^3.3.1",
     "preconditions": "^1.0.8",
@@ -87313,7 +87432,7 @@ module.exports={
     "superagent": "^3.4.1"
   },
   "devDependencies": {
-    "bitcore-wallet-service": "git@github.com:particl/bitcore-wallet-service.git",
+    "bitcore-wallet-service": "git://github.com/particl/bitcore-wallet-service.git",
     "browserify": "^13.1.0",
     "chai": "^1.9.1",
     "coveralls": "^2.11.2",
@@ -87334,16 +87453,20 @@ module.exports={
     "coveralls": "./node_modules/.bin/istanbul cover ./node_modules/mocha/bin/_mocha --report lcovonly -- -R spec && cat ./coverage/lcov.info | ./node_modules/coveralls/bin/coveralls.js && rm -rf ./coverage",
     "docs": "./node_modules/.bin/jsdox lib/* lib/common lib/errors -o docs && cat README.header.md  docs/*.md LICENSE > README.md"
   },
-  "contributors": [{
-    "name": "Ivan Socolsky",
-    "email": "ivan@bitpay.com"
-  }, {
-    "name": "Matias Alejo Garcia",
-    "email": "ematiu@gmail.com"
-  }, {
-    "name": "Ryno Mathee",
-    "email": "ryno@particl.io"
-  }]
+  "contributors": [
+    {
+      "name": "Ivan Socolsky",
+      "email": "ivan@bitpay.com"
+    },
+    {
+      "name": "Matias Alejo Garcia",
+      "email": "ematiu@gmail.com"
+    },
+    {
+      "name": "Ryno Mathee",
+      "email": "ryno@particl.io"
+    }
+  ]
 }
 
 },{}]},{},[1]);
