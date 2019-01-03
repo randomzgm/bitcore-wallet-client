@@ -14,9 +14,6 @@ var log = require('../lib/log');
 var mongodb = require('mongodb');
 var config = require('./test-config');
 
-<<<<<<< HEAD
-var Bitcore = require('particl-bitcore-lib');
-=======
 var Bitcore = require('bitcore-lib');
 var Bitcore_ = {
   btc: Bitcore,
@@ -24,7 +21,6 @@ var Bitcore_ = {
 };
 
 
->>>>>>> 9a2cc5255b38977b849649b3b3500af8fc02620b
 var BitcorePayPro = require('bitcore-payment-protocol');
 
 var BWS = require('bitcore-wallet-service');

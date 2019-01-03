@@ -26,28 +26,19 @@
   "dependencies": {
     "async": "^0.9.0",
     "bip38": "^1.3.0",
-<<<<<<< HEAD
-    "particl-bitcore-lib": "git://github.com/particl/particl-bitcore-lib.git",
-    "bitcore-mnemonic": "git://github.com/particl/bitcore-mnemonic.git",
-    "bitcore-payment-protocol": "git://github.com/particl/bitcore-payment-protocol.git",
-=======
     "bitcore-lib": "=0.16.0",
     "bitcore-lib-cash": "=0.19.0",
-    "bitcore-mnemonic": "^1.3.0",
+    "bitcore-mnemonic": "git://github.com/particl/bitcore-mnemonic.git",
     "bitcore-payment-protocol": "^1.7.0",
->>>>>>> 9a2cc5255b38977b849649b3b3500af8fc02620b
     "json-stable-stringify": "^1.0.0",
     "lodash": "^4.17.11",
+    "particl-bitcore-lib": "git://github.com/particl/particl-bitcore-lib.git",
     "preconditions": "^2.2.1",
     "sjcl": "1.0.3",
     "superagent": "^3.4.1"
   },
   "devDependencies": {
-<<<<<<< HEAD
-    "bitcore-wallet-service": "git://github.com/particl/bitcore-wallet-service.git",
-=======
     "bitcore-wallet-service": "2.5.1",
->>>>>>> 9a2cc5255b38977b849649b3b3500af8fc02620b
     "browserify": "^13.1.0",
     "chai": "^1.9.1",
     "coveralls": "^3.0.2",
@@ -64,23 +55,5 @@
     "test": "./node_modules/.bin/mocha --exit",
     "coveralls": "./node_modules/.bin/istanbul cover ./node_modules/mocha/bin/_mocha --report lcovonly -- -R spec && cat ./coverage/lcov.info | ./node_modules/coveralls/bin/coveralls.js && rm -rf ./coverage",
     "docs": "./node_modules/.bin/jsdox lib/* lib/common lib/errors -o docs && cat README.header.md  docs/*.md LICENSE > README.md"
-<<<<<<< HEAD
-  },
-  "contributors": [
-    {
-      "name": "Ivan Socolsky",
-      "email": "ivan@bitpay.com"
-    },
-    {
-      "name": "Matias Alejo Garcia",
-      "email": "ematiu@gmail.com"
-    },
-    {
-      "name": "Ryno Mathee",
-      "email": "ryno@particl.io"
-    }
-  ]
-=======
   }
->>>>>>> 9a2cc5255b38977b849649b3b3500af8fc02620b
 }
