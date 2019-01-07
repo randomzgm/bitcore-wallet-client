@@ -9,13 +9,18 @@ var should = chai.should();
 var async = require('async');
 var request = require('supertest');
 var Uuid = require('uuid');
-var tingodb = require('tingodb')({
-  memStore: true
-});
-
+var sjcl = require('sjcl');
 var log = require('../lib/log');
+var mongodb = require('mongodb');
+var config = require('./test-config');
 
-var Bitcore = require('particl-bitcore-lib');
+var Bitcore = require('bitcore-lib');
+var Bitcore_ = {
+  btc: Bitcore,
+  bch: require('bitcore-lib-cash'),
+};
+
+
 var BitcorePayPro = require('bitcore-payment-protocol');
 
 var BWS = require('bitcore-wallet-service');
@@ -68,10 +73,6 @@ helpers.stubRequest = function(err, res) {
 };
 
 
-helpers.newDb = function() {
-  this.dbCounter = (this.dbCounter || 0) + 1;
-  return new tingodb.Db('./db/test' + this.dbCounter, {});
-};
 
 helpers.generateUtxos = function(scriptType, publicKeyRing, path, requiredSignatures, amounts) {
   var amounts = [].concat(amounts);
@@ -112,11 +113,16 @@ helpers.createAndJoinWallet = function(clients, m, n, opts, cb) {
 
   opts = opts || {};
 
+  var coin = opts.coin || 'btc';
+  var network = opts.network || 'testnet';
+
   clients[0].seedFromRandomWithMnemonic({
-    network: 'testnet'
+    coin: coin,
+    network: network,
   });
   clients[0].createWallet('mywallet', 'creator', m, n, {
-    network: 'testnet',
+    coin: coin,
+    network: network,
     singleAddress: !!opts.singleAddress,
   }, function(err, secret) {
     should.not.exist(err);
@@ -130,9 +136,12 @@ helpers.createAndJoinWallet = function(clients, m, n, opts, cb) {
         function(next) {
           async.each(_.range(1, n), function(i, cb) {
             clients[i].seedFromRandomWithMnemonic({
-              network: 'testnet'
+              coin: coin,
+              network: network
             });
-            clients[i].joinWallet(secret, 'copayer ' + i, {}, cb);
+            clients[i].joinWallet(secret, 'copayer ' + i, {
+              coin: coin
+            }, cb);
           }, next);
         },
         function(next) {
@@ -191,13 +200,14 @@ blockchainExplorerMock.getUtxos = function(addresses, cb) {
 };
 
 blockchainExplorerMock.setUtxo = function(address, amount, m, confirmations) {
+  var B = Bitcore_[address.coin];
   var scriptPubKey;
   switch (address.type) {
     case Constants.SCRIPT_TYPES.P2SH:
-      scriptPubKey = address.publicKeys ? Bitcore.Script.buildMultisigOut(address.publicKeys, m).toScriptHashOut() : '';
+      scriptPubKey = address.publicKeys ? B.Script.buildMultisigOut(address.publicKeys, m).toScriptHashOut() : '';
       break;
     case Constants.SCRIPT_TYPES.P2PKH:
-      scriptPubKey = Bitcore.Script.buildPublicKeyHashOut(address.address);
+      scriptPubKey = B.Script.buildPublicKeyHashOut(address.address);
       break;
   }
   should.exist(scriptPubKey);
@@ -231,7 +241,7 @@ blockchainExplorerMock.getTransactions = function(addresses, from, to, cb) {
 };
 
 blockchainExplorerMock.getAddressActivity = function(address, cb) {
-  var activeAddresses = _.pluck(blockchainExplorerMock.utxos || [], 'address');
+  var activeAddresses = _.map(blockchainExplorerMock.utxos || [], 'address');
   return cb(null, _.includes(activeAddresses, address));
 };
 
@@ -256,13 +266,31 @@ blockchainExplorerMock.reset = function() {
 };
 
 
+helpers.newDb = (extra, cb) => {
+  extra = extra || '';
+  mongodb.MongoClient.connect(config.mongoDb.uri + extra, function(err, in_db) {
+    if (err) return  done(err);
+    in_db.dropDatabase(function(err) {
+      return cb(err, in_db);
+    });
+  });
+}
 
+var db;
 describe('client API', function() {
-  var clients, app, sandbox;
+  var clients, app, sandbox ;
   var i = 0;
+
+  before((done) => {
+    helpers.newDb('', (err, in_db) => {
+      db = in_db;
+      return done(err);
+    });
+  });
+
   beforeEach(function(done) {
     var storage = new Storage({
-      db: helpers.newDb(),
+      db: db,
     });
     var expressApp = new ExpressApp();
     expressApp.start({
@@ -279,7 +307,7 @@ describe('client API', function() {
           return helpers.newClient(app);
         });
         blockchainExplorerMock.reset();
-        sandbox = sinon.sandbox.create();
+        sandbox = sinon.createSandbox();
 
         if (!process.env.BWC_SHOW_LOGS) {
           sandbox.stub(log, 'warn');
@@ -909,7 +937,7 @@ describe('client API', function() {
         var signatures = Client.signTxp(txp, derivedPrivateKey['BIP44']);
         signatures.length.should.be.equal(utxos.length);
       });
-      it('should sign v3 proposal correctly', function() {
+      it('should sign btc proposal correctly', function() {
         var toAddress = 'msj42CCGruhRsFrGATiUuh25dtxYtnpbTx';
         var changeAddress = 'msj42CCGruhRsFrGATiUuh25dtxYtnpbTx';
 
@@ -941,6 +969,44 @@ describe('client API', function() {
         };
         var signatures = Client.signTxp(txp, derivedPrivateKey['BIP44']);
         signatures.length.should.be.equal(utxos.length);
+        signatures[0].should.equal('3045022100cfacaf8e4c9782f33f717eba3162d44cf9f34d9768a3bcd66b7052eb0868a0880220015e930e1f7d9a8b6b9e54d1450556bf4ba95c2cf8ef5c55d97de7df270cc6fd');
+        signatures[1].should.equal('3044022069cf6e5d8700ff117f754e4183e81690d99d6a6443e86c9589efa072ecb7d82c02204c254506ac38774a2176f9ef56cc239ef7867fbd24da2bef795128c75a063301');
+      });
+      it('should sign BCH proposal correctly', function() {
+        var toAddress = 'msj42CCGruhRsFrGATiUuh25dtxYtnpbTx';
+        var changeAddress = 'msj42CCGruhRsFrGATiUuh25dtxYtnpbTx';
+
+        var publicKeyRing = [{
+          xPubKey: new Bitcore.HDPublicKey(derivedPrivateKey['BIP44']),
+        }];
+
+        var utxos = helpers.generateUtxos('P2PKH', publicKeyRing, 'm/1/0', 1, [1000, 2000]);
+        var txp = {
+          version: 3,
+          coin: 'bch',
+          inputs: utxos,
+          outputs: [{
+            toAddress: toAddress,
+            amount: 800,
+            message: 'first output'
+          }, {
+            toAddress: toAddress,
+            amount: 900,
+            message: 'second output'
+          }],
+          changeAddress: {
+            address: changeAddress
+          },
+          requiredSignatures: 1,
+          outputOrder: [0, 1, 2],
+          fee: 10000,
+          derivationStrategy: 'BIP44',
+          addressType: 'P2PKH',
+        };
+        var signatures = Client.signTxp(txp, derivedPrivateKey['BIP44']);
+        signatures.length.should.be.equal(utxos.length);
+        signatures[0].should.equal('304402200aa70dfe99e25792c4a7edf773477100b6659f1ba906e551e6e5218ec32d273402202e31c575edb55b2da824e8cafd02b4769017ef63d3c888718cf6f0243c570d41');
+        signatures[1].should.equal('3045022100afde45e125f654453493b40d288cd66e8a011c66484509ae730a2686c9dff30502201bf34a6672c5848dd010b89ea1a5f040731acf78fec062f61b305e9ce32798a5');
       });
     });
   });
@@ -952,10 +1018,12 @@ describe('client API', function() {
         var walletId = Uuid.v4();
         var walletPrivKey = new Bitcore.PrivateKey();
         var network = i % 2 == 0 ? 'testnet' : 'livenet';
-        var secret = Client._buildSecret(walletId, walletPrivKey, network);
+        var coin = i % 3 == 0 ? 'bch' : 'btc';
+        var secret = Client._buildSecret(walletId, walletPrivKey, coin, network);
         var result = Client.parseSecret(secret);
         result.walletId.should.equal(walletId);
         result.walletPrivKey.toString().should.equal(walletPrivKey.toString());
+        result.coin.should.equal(coin);
         result.network.should.equal(network);
       };
     });
@@ -965,22 +1033,28 @@ describe('client API', function() {
       }).should.throw('Invalid secret');
     });
 
-    it('should create secret and parse secret from string ', function() {
+    it('should create secret and parse secret from string', function() {
       var walletId = Uuid.v4();
       var walletPrivKey = new Bitcore.PrivateKey();
+      var coin = 'btc';
       var network = 'testnet';
-      var secret = Client._buildSecret(walletId, walletPrivKey.toString(), network);
+      var secret = Client._buildSecret(walletId, walletPrivKey.toString(), coin, network);
       var result = Client.parseSecret(secret);
       result.walletId.should.equal(walletId);
       result.walletPrivKey.toString().should.equal(walletPrivKey.toString());
+      result.coin.should.equal(coin);
       result.network.should.equal(network);
+    });
+    it('should default to btc for secrets not specifying coin', function() {
+      var result = Client.parseSecret('5ZN64RxKWCJXcy1pZwgrAzL1NnN5FQic5M2tLJVG5bEHaGXNRQs2uzJjMa9pMAbP5rz9Vu2xSaT');
+      result.coin.should.equal('btc');
     });
   });
 
   describe('Notification polling', function() {
     var clock, interval;
     beforeEach(function() {
-      clock = sinon.useFakeTimers(1234000, 'Date');
+      clock = sinon.useFakeTimers({now:1234000, toFake:[ 'Date']});
     });
     afterEach(function() {
       clock.restore();
@@ -993,7 +1067,7 @@ describe('client API', function() {
 
         var notifications = [];
         clients[0]._fetchLatestNotifications(5, function() {
-          _.pluck(notifications, 'type').should.deep.equal(['NewCopayer', 'WalletComplete']);
+          _.map(notifications, 'type').should.deep.equal(['NewCopayer', 'WalletComplete']);
           clock.tick(2000);
           notifications = [];
           clients[0]._fetchLatestNotifications(5, function() {
@@ -1002,7 +1076,7 @@ describe('client API', function() {
             clients[1].createAddress(function(err, x) {
               should.not.exist(err);
               clients[0]._fetchLatestNotifications(5, function() {
-                _.pluck(notifications, 'type').should.deep.equal(['NewAddress']);
+                _.map(notifications, 'type').should.deep.equal(['NewAddress']);
                 clock.tick(2000);
                 notifications = [];
                 clients[0]._fetchLatestNotifications(5, function() {
@@ -1025,6 +1099,13 @@ describe('client API', function() {
   });
 
   describe('Wallet Creation', function() {
+
+    beforeEach((done) => {
+      db.dropDatabase(function(err) {
+        return done(err);
+      });
+    });
+
     it('should fail to create wallet in bogus device', function(done) {
       clients[0].seedFromRandomWithMnemonic();
       clients[0].keyDerivationOk = false;
@@ -1109,6 +1190,46 @@ describe('client API', function() {
         });
       });
     });
+
+    it('should create Bitcoin Cash wallet', function(done) {
+      clients[0].seedFromRandomWithMnemonic({
+        coin: 'bch'
+      });
+      clients[0].createWallet('mycashwallet', 'pepe', 1, 1, {
+        coin: 'bch'
+      }, function(err, secret) {
+        should.not.exist(err);
+        clients[0].getStatus({}, function(err, status) {
+          should.not.exist(err);
+          status.wallet.coin.should.equal('bch');
+          done();
+        })
+      });
+    });
+
+    it('should create a BCH  address correctly', function(done) {
+      var xPriv = 'xprv9s21ZrQH143K3GJpoapnV8SFfukcVBSfeCficPSGfubmSFDxo1kuHnLisriDvSnRRuL2Qrg5ggqHKNVpxR86QEC8w35uxmGoggxtQTPvfUu';
+      clients[0].seedFromExtendedPrivateKey(xPriv, {
+        'coin': 'bch',
+      });
+      clients[0].createWallet('mycashwallet', 'pepe', 1, 1, {
+        coin: 'bch'
+      }, function(err, secret) {
+        should.not.exist(err);
+
+        clients[0].createAddress(function(err, x) {
+          should.not.exist(err);
+          should.not.exist(err);
+          x.coin.should.equal('bch');
+          x.network.should.equal('livenet');
+          x.address.should.equal('CcJ4qUfyQ8x5NwhAeCQkrBSWVeXxXghcNz');
+          done();
+        })
+      });
+    });
+
+ 
+
     it('should check balance in a 1-1 ', function(done) {
       helpers.createAndJoinWallet(clients, 1, 1, function() {
         clients[0].getBalance({}, function(err, balance) {
@@ -1155,7 +1276,7 @@ describe('client API', function() {
           clients[0].openWallet(function(err, walletStatus) {
             should.not.exist(err);
             should.exist(walletStatus);
-            _.difference(_.pluck(walletStatus.copayers, 'name'), ['creator', 'guest']).length.should.equal(0);
+            _.difference(_.map(walletStatus.copayers, 'name'), ['creator', 'guest']).length.should.equal(0);
             if (++checks == 2) done();
           });
         });
@@ -1366,7 +1487,8 @@ describe('client API', function() {
           status.wallet.publicKeyRing.length.should.equal(1);
           status.wallet.status.should.equal('complete');
           var key2 = status.customData.walletPrivKey;
-          key2.should.be.equal(key2);
+
+          clients[0].credentials.walletPrivKey.should.be.equal(key2);
           done();
         });
       });
@@ -1445,6 +1567,7 @@ describe('client API', function() {
     });
 
     it('should create a 2-3 wallet with given mnemonic', function(done) {
+
       var words = 'forget announce travel fury farm alpha chaos choice talent sting eagle supreme';
       clients[0].seedFromMnemonic(words);
       clients[0].createWallet('mywallet', 'creator', 2, 3, {
@@ -1540,7 +1663,7 @@ describe('client API', function() {
         clients[0].getUtxos(opts, function(err, utxos) {
           should.not.exist(err);
           utxos.length.should.equal(2);
-          _.sum(utxos, 'satoshis').should.equal(2 * 1e8);
+          _.sumBy(utxos, 'satoshis').should.equal(2 * 1e8);
           done();
         });
       });
@@ -1548,17 +1671,28 @@ describe('client API', function() {
   });
 
   describe('Network fees', function() {
-    it('should get current fee levels', function(done) {
+    it('should get current fee levels for BTC', function(done) {
       blockchainExplorerMock.setFeeLevels({
         1: 40000,
         3: 20000,
         10: 18000,
       });
       clients[0].credentials = {};
-      clients[0].getFeeLevels('livenet', function(err, levels) {
+      clients[0].getFeeLevels('btc', 'livenet', function(err, levels) {
         should.not.exist(err);
         should.exist(levels);
-        _.difference(['priority', 'normal', 'economy'], _.pluck(levels, 'level')).should.be.empty;
+        _.difference(['priority', 'normal', 'economy'], _.map(levels, 'level')).should.be.empty;
+        done();
+      });
+    });
+    it('should get default fee levels for BCH', function(done) {
+      blockchainExplorerMock.setFeeLevels({});
+      clients[0].credentials = {};
+      clients[0].getFeeLevels('bch', 'livenet', function(err, levels) {
+        should.not.exist(err);
+        should.exist(levels);
+        levels[0].level.should.equal('normal');
+        levels[0].feePerKb.should.equal(2000);
         done();
       });
     });
@@ -1890,7 +2024,7 @@ describe('client API', function() {
     var clock;
     beforeEach(function(done) {
       this.timeout(5000);
-      clock = sinon.useFakeTimers(1234000, 'Date');
+      clock = sinon.useFakeTimers({now:1234000, toFake:[ 'Date']});
       helpers.createAndJoinWallet(clients, 2, 2, function() {
         clock.tick(25 * 1000);
         clients[0].createAddress(function(err, x) {
@@ -1910,7 +2044,7 @@ describe('client API', function() {
       clients[0].getNotifications({}, function(err, notifications) {
         should.not.exist(err);
         notifications.length.should.equal(3);
-        _.pluck(notifications, 'type').should.deep.equal(['NewCopayer', 'WalletComplete', 'NewAddress']);
+        _.map(notifications, 'type').should.deep.equal(['NewCopayer', 'WalletComplete', 'NewAddress']);
         clients[0].getNotifications({
           lastNotificationId: _.last(notifications).id
         }, function(err, notifications) {
@@ -1932,13 +2066,13 @@ describe('client API', function() {
       clients[0].getNotifications({}, function(err, notifications) {
         should.not.exist(err);
         notifications.length.should.equal(3);
-        _.pluck(notifications, 'type').should.deep.equal(['NewCopayer', 'WalletComplete', 'NewAddress']);
+        _.map(notifications, 'type').should.deep.equal(['NewCopayer', 'WalletComplete', 'NewAddress']);
         clients[0].getNotifications({
           includeOwn: true,
         }, function(err, notifications) {
           should.not.exist(err);
           notifications.length.should.equal(5);
-          _.pluck(notifications, 'type').should.deep.equal(['NewCopayer', 'NewCopayer', 'WalletComplete', 'NewAddress', 'NewAddress']);
+          _.map(notifications, 'type').should.deep.equal(['NewCopayer', 'NewCopayer', 'WalletComplete', 'NewAddress', 'NewAddress']);
           done();
         });
       });
@@ -1948,14 +2082,17 @@ describe('client API', function() {
   describe('Transaction Proposals Creation and Locked funds', function() {
     var myAddress;
     beforeEach(function(done) {
-      helpers.createAndJoinWallet(clients, 2, 3, function(w) {
-        clients[0].createAddress(function(err, address) {
-          should.not.exist(err);
-          myAddress = address;
-          blockchainExplorerMock.setUtxo(address, 2, 2);
-          blockchainExplorerMock.setUtxo(address, 2, 2);
-          blockchainExplorerMock.setUtxo(address, 1, 2, 0);
-          done();
+      db.dropDatabase(function(err) {
+        helpers.createAndJoinWallet(clients, 2, 3, {}, function(w) {
+
+          clients[0].createAddress(function(err, address) {
+            should.not.exist(err);
+            myAddress = address;
+            blockchainExplorerMock.setUtxo(address, 2, 2);
+            blockchainExplorerMock.setUtxo(address, 2, 2);
+            blockchainExplorerMock.setUtxo(address, 1, 2, 0);
+            done(err);
+          });
         });
       });
     });
@@ -1989,10 +2126,10 @@ describe('client API', function() {
         txp.status.should.equal('temporary');
         txp.message.should.equal('hello');
         txp.outputs.length.should.equal(2);
-        _.sum(txp.outputs, 'amount').should.equal(3e8);
+        _.sumBy(txp.outputs, 'amount').should.equal(3e8);
         txp.outputs[0].message.should.equal('world');
-        _.uniq(txp.outputs, 'toAddress').length.should.equal(1);
-        _.uniq(_.pluck(txp.outputs, 'toAddress'))[0].should.equal(toAddress);
+        _.uniqBy(txp.outputs, 'toAddress').length.should.equal(1);
+        _.uniq(_.map(txp.outputs, 'toAddress'))[0].should.equal(toAddress);
         txp.hasUnconfirmedInputs.should.equal(false);
         txp.feeLevel.should.equal('normal');
         txp.feePerKb.should.equal(123e2);
@@ -2030,7 +2167,6 @@ describe('client API', function() {
         });
       });
     });
-
     it('Should create, publish, recreate, republish proposal', function(done) {
       blockchainExplorerMock.setFeeLevels({
         1: 456e2,
@@ -2100,7 +2236,7 @@ describe('client API', function() {
           toAddress: 'n2TBMPzPECGUfcT2EByiTJ12TPZkhN2mN5',
         }],
         feePerKb: 123e2,
-        changeAddress: myAddress,
+        changeAddress: myAddress.address,
         message: 'hello',
       };
 
@@ -2147,7 +2283,7 @@ describe('client API', function() {
       async.each(tamperings, function(tamperFn, next) {
         helpers.tamperResponse(clients[0], 'post', '/v2/txproposals/', args, tamperFn, function() {
           clients[0].createTxProposal(opts, function(err, txp) {
-            should.exist(err, tamperFn);
+            should.exist(err, 'For tamper function ' + tamperFn);
             err.should.be.an.instanceOf(Errors.SERVER_COMPROMISED);
             next();
           });
@@ -2213,39 +2349,6 @@ describe('client API', function() {
         done();
       });
     });
-    it('Should sign proposal', function(done) {
-      var toAddress = 'n2TBMPzPECGUfcT2EByiTJ12TPZkhN2mN5';
-      var opts = {
-        outputs: [{
-          amount: 1e8,
-          toAddress: toAddress,
-        }, {
-          amount: 2e8,
-          toAddress: toAddress,
-        }],
-        feePerKb: 100e2,
-        message: 'just some message',
-      };
-      clients[0].createTxProposal(opts, function(err, txp) {
-        should.not.exist(err);
-        should.exist(txp);
-        clients[0].publishTxProposal({
-          txp: txp,
-        }, function(err, publishedTxp) {
-          should.not.exist(err);
-          should.exist(publishedTxp);
-          publishedTxp.status.should.equal('pending');
-          clients[0].signTxProposal(publishedTxp, function(err, txp) {
-            should.not.exist(err);
-            clients[1].signTxProposal(publishedTxp, function(err, txp) {
-              should.not.exist(err);
-              txp.status.should.equal('accepted');
-              done();
-            });
-          });
-        });
-      });
-    });
     it('Should create proposal with unconfirmed inputs', function(done) {
       var opts = {
         amount: 4.5e8,
@@ -2281,7 +2384,7 @@ describe('client API', function() {
         });
       });
     });
-    it('Should fail to create proposal with insufficient funds for fee', function(done) {
+   it('Should fail to create proposal with insufficient funds for fee', function(done) {
       var opts = {
         amount: 5e8 - 200e2,
         toAddress: 'n2TBMPzPECGUfcT2EByiTJ12TPZkhN2mN5',
@@ -2371,6 +2474,30 @@ describe('client API', function() {
         });
       });
     });
+    it('Should hide message and refusal texts if not key is present', function(done) {
+      var opts = {
+        amount: 1e8,
+        toAddress: 'n2TBMPzPECGUfcT2EByiTJ12TPZkhN2mN5',
+        message: 'some message',
+      };
+      helpers.createAndPublishTxProposal(clients[0], opts, function(err, x) {
+        should.not.exist(err);
+        clients[1].rejectTxProposal(x, 'rejection comment', function(err, tx1) {
+          should.not.exist(err);
+
+          clients[2].credentials.sharedEncryptingKey=null;
+
+          clients[2].getTxProposals({}, function(err, txs) {
+            should.not.exist(err);
+            txs[0].message.should.equal('<ECANNOTDECRYPT>');
+            txs[0].actions[0].copayerName.should.equal('<ECANNOTDECRYPT>');
+            txs[0].actions[0].comment.should.equal('<ECANNOTDECRYPT>');
+            done();
+          });
+        });
+      });
+    });
+ 
     it('Should encrypt proposal message', function(done) {
       var opts = {
         outputs: [{
@@ -2404,6 +2531,7 @@ describe('client API', function() {
         });
       });
     });
+
     describe('Detecting tampered tx proposals', function() {
       it('should detect wrong signature', function(done) {
         helpers.createAndJoinWallet(clients, 1, 1, function() {
@@ -2472,53 +2600,72 @@ describe('client API', function() {
         });
       });
     });
+  });
 
-    it('Should sign proposal with no change', function(done) {
-      var toAddress = 'n2TBMPzPECGUfcT2EByiTJ12TPZkhN2mN5';
-      var opts = {
-        outputs: [{
-          amount: 4e8 - 100,
-          toAddress: toAddress,
-        }],
-        excludeUnconfirmedUtxos: true,
-        feePerKb: 1,
-      };
-      clients[0].createTxProposal(opts, function(err, txp) {
-        should.not.exist(err);
-        should.exist(txp);
-        var t = Utils.buildTx(txp);
-        should.not.exist(t.getChangeOutput());
-        clients[0].publishTxProposal({
-          txp: txp,
-        }, function(err, publishedTxp) {
+  describe('Transaction Proposal signing', function() {
+    this.timeout(5000);
+    function setup(m, n, coin, network, cb) {
+      helpers.createAndJoinWallet(clients, m, n, {
+        coin: coin,
+        network: network,
+      }, function(w) {
+        clients[0].createAddress(function(err, address) {
           should.not.exist(err);
-          should.exist(publishedTxp);
-          publishedTxp.status.should.equal('pending');
-          clients[0].signTxProposal(publishedTxp, function(err, txp) {
+          blockchainExplorerMock.setUtxo(address, 2, 2);
+          blockchainExplorerMock.setUtxo(address, 2, 2);
+          blockchainExplorerMock.setUtxo(address, 1, 2, 0);
+          cb();
+        });
+      });
+    };
+
+    describe('BTC', function(done) {
+      beforeEach(function(done) {
+        setup(2, 3, 'btc', 'testnet', done);
+      });
+
+      it('Should sign proposal', function(done) {
+        var toAddress = 'n2TBMPzPECGUfcT2EByiTJ12TPZkhN2mN5';
+        var opts = {
+          outputs: [{
+            amount: 1e8,
+            toAddress: toAddress,
+          }, {
+            amount: 2e8,
+            toAddress: toAddress,
+          }],
+          feePerKb: 100e2,
+          message: 'just some message',
+        };
+        clients[0].createTxProposal(opts, function(err, txp) {
+          should.not.exist(err);
+          should.exist(txp);
+          clients[0].publishTxProposal({
+            txp: txp,
+          }, function(err, publishedTxp) {
             should.not.exist(err);
-            clients[1].signTxProposal(publishedTxp, function(err, txp) {
+            should.exist(publishedTxp);
+            publishedTxp.status.should.equal('pending');
+            clients[0].signTxProposal(publishedTxp, function(err, txp) {
               should.not.exist(err);
-              txp.status.should.equal('accepted');
-              done();
+              clients[1].signTxProposal(publishedTxp, function(err, txp) {
+                should.not.exist(err);
+                txp.status.should.equal('accepted');
+                done();
+              });
             });
           });
         });
       });
-    });
-    it('Should sign proposal created with send max settings', function(done) {
-      var toAddress = 'n2TBMPzPECGUfcT2EByiTJ12TPZkhN2mN5';
-      clients[0].getSendMaxInfo({
-        feePerKb: 100e2,
-        returnInputs: true
-      }, function(err, info) {
-        should.not.exist(err);
+      it('Should sign proposal with no change', function(done) {
+        var toAddress = 'n2TBMPzPECGUfcT2EByiTJ12TPZkhN2mN5';
         var opts = {
           outputs: [{
-            amount: info.amount,
+            amount: 4e8 - 100,
             toAddress: toAddress,
           }],
-          inputs: info.inputs,
-          fee: info.fee,
+          excludeUnconfirmedUtxos: true,
+          feePerKb: 1,
         };
         clients[0].createTxProposal(opts, function(err, txp) {
           should.not.exist(err);
@@ -2536,12 +2683,89 @@ describe('client API', function() {
               clients[1].signTxProposal(publishedTxp, function(err, txp) {
                 should.not.exist(err);
                 txp.status.should.equal('accepted');
-                clients[0].getBalance({}, function(err, balance) {
+                done();
+              });
+            });
+          });
+        });
+      });
+      it('Should sign proposal created with send max settings', function(done) {
+        var toAddress = 'n2TBMPzPECGUfcT2EByiTJ12TPZkhN2mN5';
+        clients[0].getSendMaxInfo({
+          feePerKb: 100e2,
+          returnInputs: true
+        }, function(err, info) {
+          should.not.exist(err);
+          var opts = {
+            outputs: [{
+              amount: info.amount,
+              toAddress: toAddress,
+            }],
+            inputs: info.inputs,
+            fee: info.fee,
+          };
+          clients[0].createTxProposal(opts, function(err, txp) {
+            should.not.exist(err);
+            should.exist(txp);
+            var t = Utils.buildTx(txp);
+            should.not.exist(t.getChangeOutput());
+            clients[0].publishTxProposal({
+              txp: txp,
+            }, function(err, publishedTxp) {
+              should.not.exist(err);
+              should.exist(publishedTxp);
+              publishedTxp.status.should.equal('pending');
+              clients[0].signTxProposal(publishedTxp, function(err, txp) {
+                should.not.exist(err);
+                clients[1].signTxProposal(publishedTxp, function(err, txp) {
                   should.not.exist(err);
-                  balance.lockedAmount.should.equal(5e8);
-                  done();
+                  txp.status.should.equal('accepted');
+                  clients[0].getBalance({}, function(err, balance) {
+                    should.not.exist(err);
+                    balance.lockedAmount.should.equal(5e8);
+                    done();
+                  });
                 });
               });
+            });
+          });
+        });
+      });
+
+    });
+
+    describe('BCH', function(done) {
+      beforeEach(function(done) {
+        setup(1, 1, 'bch', 'livenet', done);
+      });
+
+      it('Should sign proposal', function(done) {
+        var toAddress = 'CfNCvxmKYzZsS78pDKKfrDd2doZt3w4jUs';
+        var opts = {
+          outputs: [{
+            amount: 1e8,
+            toAddress: toAddress,
+          }, {
+            amount: 2e8,
+            toAddress: toAddress,
+          }],
+          feePerKb: 100e2,
+          message: 'just some message',
+          coin: 'bch',
+        };
+        clients[0].createTxProposal(opts, function(err, txp) {
+          should.not.exist(err);
+          should.exist(txp);
+          clients[0].publishTxProposal({
+            txp: txp,
+          }, function(err, publishedTxp) {
+            should.not.exist(err);
+            should.exist(publishedTxp);
+            publishedTxp.status.should.equal('pending');
+            clients[0].signTxProposal(publishedTxp, function(err, txp) {
+              should.not.exist(err);
+              txp.status.should.equal('accepted');
+              done();
             });
           });
         });
@@ -2549,8 +2773,14 @@ describe('client API', function() {
     });
   });
 
+
   describe('Payment Protocol', function() {
     var http;
+    beforeEach((done) => {
+      db.dropDatabase(function(err) {
+        done();
+      });
+    });
 
     describe('Shared wallet', function() {
       beforeEach(function(done) {
@@ -2568,6 +2798,8 @@ describe('client API', function() {
             clients[0].payProHttp = clients[1].payProHttp = http;
 
             clients[0].fetchPayPro(opts, function(err, paypro) {
+              http.getCall(0).args[0].coin.should.equal('btc');
+
               helpers.createAndPublishTxProposal(clients[0], {
                 toAddress: paypro.toAddress,
                 amount: paypro.amount,
@@ -2726,6 +2958,98 @@ describe('client API', function() {
       });
     });
 
+
+    describe('Shared wallet / requiredFeeRate', function() {
+      beforeEach(function(done) {
+        http = sinon.stub();
+        http.yields(null, TestData.payProRequestedFeeBuf);
+        helpers.createAndJoinWallet(clients, 2, 2, function(w) {
+          clients[0].createAddress(function(err, x0) {
+            should.not.exist(err);
+            should.exist(x0.address);
+            blockchainExplorerMock.setUtxo(x0, 1, 2);
+            blockchainExplorerMock.setUtxo(x0, 1, 2);
+            var opts = {
+              payProUrl: 'dummy',
+            };
+            clients[0].payProHttp = clients[1].payProHttp = http;
+
+            clients[0].fetchPayPro(opts, function(err, paypro) {
+              http.getCall(0).args[0].coin.should.equal('btc');
+              paypro.requiredFeeRate.should.equal(1);
+              helpers.createAndPublishTxProposal(clients[0], {
+                toAddress: paypro.toAddress,
+                amount: paypro.amount,
+                message: paypro.memo,
+                payProUrl: opts.payProUrl,
+                feePerKb: paypro.requiredFeeRate*1024,
+              }, function(err, x) {
+                should.not.exist(err);
+                done();
+              });
+            });
+          });
+        });
+      });
+
+      it('Should Create and Verify a Tx from PayPro', function(done) {
+        clients[1].getTxProposals({}, function(err, txps) {
+          should.not.exist(err);
+          var tx = txps[0];
+          // From the hardcoded paypro request
+          tx.outputs[0].amount.should.equal(9400);
+          tx.outputs[0].toAddress.should.equal('mrobN6UstsVWLHqxfRDFz3WYxnKwxEHCEv');
+          tx.message.should.equal('Payment request for BitPay invoice 4QZqHsP42WWzkec74jTHc4 for merchant GusPay');
+          tx.payProUrl.should.equal('dummy');
+          tx.feePerKb.should.equal(1024);
+          done();
+        });
+      });
+
+      it('Should send the "payment message" when last copayer sign', function(done) {
+        clients[0].getTxProposals({}, function(err, txps) {
+          should.not.exist(err);
+          clients[0].signTxProposal(txps[0], function(err, xx, paypro) {
+            should.not.exist(err);
+            clients[1].signTxProposal(xx, function(err, yy, paypro) {
+              should.not.exist(err);
+              yy.status.should.equal('accepted');
+              http.onCall(5).yields(null, TestData.payProAckBuf);
+
+              clients[1].broadcastTxProposal(yy, function(err, zz, memo) {
+                should.not.exist(err);
+                var args = http.lastCall.args[0];
+                args.method.should.equal('POST');
+                args.body.length.should.be.within(440, 460);
+                memo.should.equal('Transaction received by BitPay. Invoice will be marked as paid if the transaction is confirmed.');
+                zz.message.should.equal('Payment request for BitPay invoice 4QZqHsP42WWzkec74jTHc4 for merchant GusPay');
+                zz.feePerKb.should.equal(1024);
+                done();
+              });
+            });
+          });
+        });
+      });
+
+
+      it.skip('Should fail if requiredFeeRate is not meet', function(done) {
+        clients[0].getTxProposals({}, function(err, txps) {
+          should.not.exist(err);
+          clients[0].signTxProposal(txps[0], function(err, xx, paypro) {
+            should.not.exist(err);
+            xx.feePerKb/=2;
+            clients[1].signTxProposal(xx, function(err, yy, paypro) {
+              err.message.should.equal('Server response could not be verified.');
+              done()
+            });
+          });
+        });
+      });
+
+    });
+
+
+
     describe('1-of-1 wallet', function() {
       beforeEach(function(done) {
         http = sinon.stub();
@@ -2742,6 +3066,7 @@ describe('client API', function() {
             clients[0].payProHttp = clients[1].payProHttp = http;
 
             clients[0].fetchPayPro(opts, function(err, paypro) {
+              http.getCall(0).args[0].coin.should.equal('btc');
               helpers.createAndPublishTxProposal(clients[0], {
                 toAddress: paypro.toAddress,
                 amount: paypro.amount,
@@ -2814,6 +3139,103 @@ describe('client API', function() {
         });
       });
     });
+
+
+    describe('1-of-1 BCH wallet', function() {
+      
+      // note this is using BCH with BTC format testnet address
+      beforeEach(function(done) {
+        http = sinon.stub();
+        http.yields(null, TestData.payProDataBchBuf);
+        helpers.createAndJoinWallet(clients, 1, 1, {coin:'bch', network:'livenet'}, function(w) {
+          clients[0].createAddress(function(err, x0) {
+            should.not.exist(err);
+            should.exist(x0.address);
+            blockchainExplorerMock.setUtxo(x0, 1, 2);
+            blockchainExplorerMock.setUtxo(x0, 1, 2);
+            var opts = {
+              payProUrl: 'dummy',
+            };
+            clients[0].payProHttp = clients[1].payProHttp = http;
+
+            clients[0].fetchPayPro(opts, function(err, paypro) {
+              paypro.toAddress.should.equal('CN4yN5kfov99EjS1amKYQnSfaehpyRGzv2');
+              http.getCall(0).args[0].coin.should.equal('bch');
+              helpers.createAndPublishTxProposal(clients[0], {
+                toAddress: paypro.toAddress,
+                amount: paypro.amount,
+                message: paypro.memo,
+                payProUrl: opts.payProUrl,
+              }, function(err, x) {
+                should.not.exist(err);
+                done();
+              });
+            });
+          });
+        });
+      });
+
+      it('Should send correct refund address', function(done) {
+        clients[0].getTxProposals({}, function(err, txps) {
+          should.not.exist(err);
+          var changeAddress = txps[0].changeAddress.address;
+          clients[0].signTxProposal(txps[0], function(err, xx, paypro) {
+            should.not.exist(err);
+            xx.status.should.equal('accepted');
+            http.onCall(5).yields(null, TestData.payProAckBuf);
+
+            clients[0].broadcastTxProposal(xx, function(err, zz, memo) {
+
+              should.not.exist(err);
+              var args = http.lastCall.args[0];
+              var data = BitcorePayPro.Payment.decode(args.body);
+              var pay = new BitcorePayPro();
+              var p = pay.makePayment(data);
+              var refund_to = p.get('refund_to');
+              refund_to.length.should.equal(1);
+
+              refund_to = refund_to[0];
+
+              var amount = refund_to.get('amount')
+              amount.low.should.equal(830600);
+              amount.high.should.equal(0);
+              var s = refund_to.get('script');
+              s = new Bitcore_['bch'].Script(s.buffer.slice(s.offset, s.limit));
+              var addr = new Bitcore_['bch'].Address.fromScript(s);
+              var addrStr = addr.toLegacyAddress();
+              addrStr.should.equal(changeAddress);
+              done();
+            });
+          });
+        });
+      });
+
+      it('Should send the signed tx in paypro', function(done) {
+        clients[0].getTxProposals({}, function(err, txps) {
+          should.not.exist(err);
+          var changeAddress = txps[0].changeAddress.address;
+          clients[0].signTxProposal(txps[0], function(err, xx, paypro) {
+            should.not.exist(err);
+            xx.status.should.equal('accepted');
+            http.onCall(5).yields(null, TestData.payProAckBuf);
+
+            clients[0].broadcastTxProposal(xx, function(err, zz, memo) {
+              should.not.exist(err);
+              var args = http.lastCall.args[0];
+              var data = BitcorePayPro.Payment.decode(args.body);
+              var pay = new BitcorePayPro();
+              var p = pay.makePayment(data);
+              var rawTx = p.get('transactions')[0].toBuffer();
+              var tx = new  Bitcore_['bch'].Transaction(rawTx);
+              var script = tx.inputs[0].script;
+              script.isPublicKeyHashIn().should.equal(true);
+              done();
+            });
+          });
+        });
+      });
+    });
+
 
     describe('New proposal flow', function() {
 
@@ -3283,6 +3705,7 @@ describe('client API', function() {
       });
     });
     it('should get transaction history decorated with proposal & notes', function(done) {
+      this.timeout(5000);
       async.waterfall([
 
         function(next) {
@@ -3400,7 +3823,7 @@ describe('client API', function() {
             clients[0].getTxHistory(testCase.opts, function(err, txs) {
               should.not.exist(err);
               should.exist(txs);
-              var times = _.pluck(txs, 'time');
+              var times = _.map(txs, 'time');
               times.should.deep.equal(testCase.expected);
               next();
             });
@@ -3482,7 +3905,7 @@ describe('client API', function() {
       });
     });
     it('should get all notes edited past a given date', function(done) {
-      var clock = sinon.useFakeTimers('Date');
+      var clock = sinon.useFakeTimers({toFake:[ 'Date']});
       async.series([
 
         function(next) {
@@ -3521,7 +3944,7 @@ describe('client API', function() {
           }, function(err, notes) {
             should.not.exist(err);
             notes.length.should.equal(2);
-            _.difference(_.pluck(notes, 'txid'), ['123', '456']).should.be.empty;
+            _.difference(_.map(notes, 'txid'), ['123', '456']).should.be.empty;
             next();
           });
         },
@@ -3870,6 +4293,16 @@ describe('client API', function() {
     });
 
     describe('Recovery', function() {
+      var db2; 
+      before( (done) => {
+        helpers.newDb(2,(err,in_db) => {
+          db2 = in_db;
+          return done(err);
+        });
+      });
+
+
+
       it('should be able to gain access to a 1-1 wallet with just the xPriv', function(done) {
         helpers.createAndJoinWallet(clients, 1, 1, function() {
           var xpriv = clients[0].credentials.xPrivKey;
@@ -3935,7 +4368,7 @@ describe('client API', function() {
             should.exist(addr);
 
             var storage = new Storage({
-              db: helpers.newDb(),
+              db: db2,
             });
 
             var newApp;
@@ -3972,7 +4405,7 @@ describe('client API', function() {
                   recoveryClient.getStatus({}, function(err, status) {
                     should.not.exist(err);
                     status.wallet.name.should.equal('mywallet');
-                    _.difference(_.pluck(status.wallet.copayers, 'name'), ['creator', 'copayer 1']).length.should.equal(0);
+                    _.difference(_.map(status.wallet.copayers, 'name'), ['creator', 'copayer 1']).length.should.equal(0);
                     recoveryClient.createAddress(function(err, addr2) {
                       should.not.exist(err);
                       should.exist(addr2);
@@ -4003,7 +4436,7 @@ describe('client API', function() {
             blockchainExplorerMock.setUtxo(addr, 1, 2);
 
             var storage = new Storage({
-              db: helpers.newDb(),
+              db: db2,
             });
             var newApp;
             var expressApp = new ExpressApp();
@@ -4058,7 +4491,7 @@ describe('client API', function() {
             should.exist(addr);
 
             var storage = new Storage({
-              db: helpers.newDb(),
+              db: db2,
             });
             var newApp;
             var expressApp = new ExpressApp();
@@ -4083,7 +4516,7 @@ describe('client API', function() {
                       should.not.exist(err);
                       recoveryClient.getStatus({}, function(err, status) {
                         should.not.exist(err);
-                        _.difference(_.pluck(status.wallet.copayers, 'name'), ['creator', 'copayer 1']).length.should.equal(0);
+                        _.difference(_.map(status.wallet.copayers, 'name'), ['creator', 'copayer 1']).length.should.equal(0);
                         recoveryClient.createAddress(function(err, addr2) {
                           should.not.exist(err);
                           should.exist(addr2);
@@ -4121,7 +4554,7 @@ describe('client API', function() {
             should.exist(addr);
 
             var storage = new Storage({
-              db: helpers.newDb(),
+              db: db2,
             });
 
             var newApp;
@@ -4453,6 +4886,14 @@ describe('client API', function() {
   });
 
   describe('Legacy Copay Import', function() {
+    var db2; 
+    before( (done) => {
+      helpers.newDb(2,(err,in_db) => {
+        db2 = in_db;
+        return done(err);
+      });
+    });
+
     it('Should get wallets from profile', function(done) {
       var t = ImportData.copayers[0];
       var c = helpers.newClient(app);
@@ -4620,7 +5061,7 @@ describe('client API', function() {
 
           // New BWS server...
           var storage = new Storage({
-            db: helpers.newDb(),
+            db: db2,
           });
           var newApp;
           var expressApp = new ExpressApp();
@@ -4634,18 +5075,36 @@ describe('client API', function() {
             });
           var recoveryClient = helpers.newClient(newApp);
           recoveryClient.import(c.export());
+
+          /*
+           * This is to export 2 old BIP45 wallets
+           var b= c.export();
+
+           var e = sjcl.encrypt('hola', b, {
+           iter: 10000
+           });
+           console.log("[client.js.4813] C EXPORT\n", e); //TODO
+
+           b= c2.export();
+           e= sjcl.encrypt('hola', b, {
+           iter: 10000
+           });
+
+           console.log("[client.js.4813] C2 EXPORT\n", e); //TODO
+           */
+
           recoveryClient.recreateWallet(function(err) {
             should.not.exist(err);
             recoveryClient.getStatus({}, function(err, status) {
               should.not.exist(err);
-              _.pluck(status.wallet.copayers, 'name').sort().should.deep.equal(['123', '234', '345']);
+              _.map(status.wallet.copayers, 'name').sort().should.deep.equal(['123', '234', '345']);
               var t2 = ImportData.copayers[1];
               var c2p = helpers.newClient(newApp);
               c2p.createWalletFromOldCopay(t2.username, t2.password, t2.ls[w], function(err) {
                 should.not.exist(err);
                 c2p.getStatus({}, function(err, status) {
                   should.not.exist(err);
-                  _.pluck(status.wallet.copayers, 'name').sort().should.deep.equal(['123', '234', '345']);
+                  _.map(status.wallet.copayers, 'name').sort().should.deep.equal(['123', '234', '345']);
                   done();
                 });
               });
@@ -4984,93 +5443,111 @@ describe('client API', function() {
     });
   });
 
-  describe('Sweep paper wallet', function() {
-    it.skip('should decrypt bip38 encrypted private key', function(done) {
-      this.timeout(60000);
-      clients[0].decryptBIP38PrivateKey('6PfRh9ZnWtiHrGoPPSzXe6iafTXc6FSXDhSBuDvvDmGd1kpX2Gvy1CfTcA', 'passphrase', {}, function(err, result) {
-        should.not.exist(err);
-        result.should.equal('5KjBgBiadWGhjWmLN1v4kcEZqWSZFqzgv7cSUuZNJg4tD82c4xp');
-        done();
-      });
-    });
-    it.skip('should fail to decrypt bip38 encrypted private key with incorrect passphrase', function(done) {
-      this.timeout(60000);
-      clients[0].decryptBIP38PrivateKey('6PfRh9ZnWtiHrGoPPSzXe6iafTXc6FSXDhSBuDvvDmGd1kpX2Gvy1CfTcA', 'incorrect passphrase', {}, function(err, result) {
-        should.exist(err);
-        err.message.should.contain('passphrase');
-        done();
-      });
-    });
-    it('should get balance from single private key', function(done) {
-      var address = {
-        address: '1PuKMvRFfwbLXyEPXZzkGi111gMUCs6uE3',
-        type: 'P2PKH',
-      };
-      helpers.createAndJoinWallet(clients, 1, 1, function() {
-        blockchainExplorerMock.setUtxo(address, 123, 1);
-        clients[0].getBalanceFromPrivateKey('5KjBgBiadWGhjWmLN1v4kcEZqWSZFqzgv7cSUuZNJg4tD82c4xp', function(err, balance) {
+  var addrMap = {
+    btc: ['1PuKMvRFfwbLXyEPXZzkGi111gMUCs6uE3','1GG3JQikGC7wxstyavUBDoCJ66bWLLENZC'],
+    bch: ['CfNCvxmKYzZsS78pDKKfrDd2doZt3w4jUs','CXivsT4p9F6Us1oQGfo6oJpKiDovJjRVUE']
+  };
+  _.each(['bch', 'btc'], function(coin) {
+    var addr= addrMap[coin];
+
+    describe('Sweep paper wallet ' + coin, function() {
+      var B = Bitcore_[coin];
+      it.skip('should decrypt bip38 encrypted private key', function(done) {
+        this.timeout(60000);
+        clients[0].decryptBIP38PrivateKey('6PfRh9ZnWtiHrGoPPSzXe6iafTXc6FSXDhSBuDvvDmGd1kpX2Gvy1CfTcA', 'passphrase', {}, function(err, result) {
           should.not.exist(err);
-          balance.should.equal(123 * 1e8);
+          result.should.equal('5KjBgBiadWGhjWmLN1v4kcEZqWSZFqzgv7cSUuZNJg4tD82c4xp');
           done();
         });
       });
-    });
-    it('should build tx for single private key', function(done) {
-      var address = {
-        address: '1PuKMvRFfwbLXyEPXZzkGi111gMUCs6uE3',
-        type: 'P2PKH',
-      };
-      helpers.createAndJoinWallet(clients, 1, 1, function() {
-        blockchainExplorerMock.setUtxo(address, 123, 1);
-        clients[0].buildTxFromPrivateKey('5KjBgBiadWGhjWmLN1v4kcEZqWSZFqzgv7cSUuZNJg4tD82c4xp', '1GG3JQikGC7wxstyavUBDoCJ66bWLLENZC', {}, function(err, tx) {
-          should.not.exist(err);
-          should.exist(tx);
-          tx.outputs.length.should.equal(1);
-          var output = tx.outputs[0];
-          output.satoshis.should.equal(123 * 1e8 - 10000);
-          var script = new Bitcore.Script.buildPublicKeyHashOut(Bitcore.Address.fromString('1GG3JQikGC7wxstyavUBDoCJ66bWLLENZC'));
-          output.script.toString('hex').should.equal(script.toString('hex'));
-          done();
-        });
-      });
-    });
-
-    it('should handle tx serialization error when building tx', function(done) {
-      var sandbox = sinon.sandbox.create();
-
-      var se = sandbox.stub(Bitcore.Transaction.prototype, 'serialize', function() {
-        throw new Error('this is an error');
-      });
-
-      var address = {
-        address: '1PuKMvRFfwbLXyEPXZzkGi111gMUCs6uE3',
-        type: 'P2PKH',
-      };
-      helpers.createAndJoinWallet(clients, 1, 1, function() {
-        blockchainExplorerMock.setUtxo(address, 123, 1);
-        clients[0].buildTxFromPrivateKey('5KjBgBiadWGhjWmLN1v4kcEZqWSZFqzgv7cSUuZNJg4tD82c4xp', '1GG3JQikGC7wxstyavUBDoCJ66bWLLENZC', {}, function(err, tx) {
+      it.skip('should fail to decrypt bip38 encrypted private key with incorrect passphrase', function(done) {
+        this.timeout(60000);
+        clients[0].decryptBIP38PrivateKey('6PfRh9ZnWtiHrGoPPSzXe6iafTXc6FSXDhSBuDvvDmGd1kpX2Gvy1CfTcA', 'incorrect passphrase', {}, function(err, result) {
           should.exist(err);
-          should.not.exist(tx);
-          err.should.be.an.instanceOf(Errors.COULD_NOT_BUILD_TRANSACTION);
-          sandbox.restore();
+          err.message.should.contain('passphrase');
           done();
         });
       });
-    });
+      it('should get balance from single private key', function(done) {
+        var address = {
+          address: addr[0],
+          type: 'P2PKH',
+          coin: coin,
+        };
+        helpers.createAndJoinWallet(clients, 1, 1, function() {
+          blockchainExplorerMock.setUtxo(address, 123, 1);
+          clients[0].getBalanceFromPrivateKey('5KjBgBiadWGhjWmLN1v4kcEZqWSZFqzgv7cSUuZNJg4tD82c4xp', coin, function(err, balance) {
+            should.not.exist(err);
+            balance.should.equal(123 * 1e8);
+            done();
+          });
+        });
+      });
+      it('should build tx for single private key', function(done) {
+        var address = {
+          address: addr[0],
+          type: 'P2PKH',
+          coin: coin,
+        };
+        helpers.createAndJoinWallet(clients, 1, 1, function() {
+          blockchainExplorerMock.setUtxo(address, 123, 1);
+          clients[0].buildTxFromPrivateKey('5KjBgBiadWGhjWmLN1v4kcEZqWSZFqzgv7cSUuZNJg4tD82c4xp', addr[1], { 
+            coin: coin
+          }, function(err, tx) {
+            should.not.exist(err);
+            should.exist(tx);
+            tx.outputs.length.should.equal(1);
+            var output = tx.outputs[0];
+            output.satoshis.should.equal(123 * 1e8 - 10000);
+            var script = B.Script.buildPublicKeyHashOut(B.Address.fromString(addr[1]));
+            output.script.toString('hex').should.equal(script.toString('hex'));
+            done();
+          });
+        });
+      });
 
-    it('should fail to build tx for single private key if insufficient funds', function(done) {
-      var address = {
-        address: '1PuKMvRFfwbLXyEPXZzkGi111gMUCs6uE3',
-        type: 'P2PKH',
-      };
-      helpers.createAndJoinWallet(clients, 1, 1, function() {
-        blockchainExplorerMock.setUtxo(address, 123 / 1e8, 1);
-        clients[0].buildTxFromPrivateKey('5KjBgBiadWGhjWmLN1v4kcEZqWSZFqzgv7cSUuZNJg4tD82c4xp', '1GG3JQikGC7wxstyavUBDoCJ66bWLLENZC', {
-          fee: 500
-        }, function(err, tx) {
-          should.exist(err);
-          err.should.be.an.instanceOf(Errors.INSUFFICIENT_FUNDS);
-          done();
+      it('should handle tx serialization error when building tx', function(done) {
+        var sandbox = sinon.sandbox.create();
+
+        var se = sandbox.stub(B.Transaction.prototype, 'serialize').callsFake(function() {
+          throw new Error('this is an error');
+        });
+
+        var address = {
+          address: addr[0],
+          type: 'P2PKH',
+          coin: coin,
+        };
+        helpers.createAndJoinWallet(clients, 1, 1, function() {
+          blockchainExplorerMock.setUtxo(address, 123, 1);
+          clients[0].buildTxFromPrivateKey('5KjBgBiadWGhjWmLN1v4kcEZqWSZFqzgv7cSUuZNJg4tD82c4xp', addr[1],  {
+            coin: coin,
+          }, function(err, tx) {
+            should.exist(err);
+            should.not.exist(tx);
+            err.should.be.an.instanceOf(Errors.COULD_NOT_BUILD_TRANSACTION);
+            sandbox.restore();
+            done();
+          });
+        });
+      });
+
+      it('should fail to build tx for single private key if insufficient funds', function(done) {
+        var address = {
+          address: addr[0],
+          type: 'P2PKH',
+          coin: coin,
+        };
+        helpers.createAndJoinWallet(clients, 1, 1, function() {
+          blockchainExplorerMock.setUtxo(address, 123 / 1e8, 1);
+          clients[0].buildTxFromPrivateKey('5KjBgBiadWGhjWmLN1v4kcEZqWSZFqzgv7cSUuZNJg4tD82c4xp', addr[1], {
+            fee: 500,
+            coin: coin,
+          }, function(err, tx) {
+            should.exist(err);
+            err.should.be.an.instanceOf(Errors.INSUFFICIENT_FUNDS);
+            done();
+          });
         });
       });
     });
@@ -5115,7 +5592,7 @@ describe('client API', function() {
 
       var client = new Client();
 
-      var _f = sandbox.stub(client, '_fetchLatestNotifications', function(interval, cb) {
+      var _f = sandbox.stub(client, '_fetchLatestNotifications').callsFake(function(interval, cb) {
         cb(new Errors.NOT_FOUND);
       });
 
@@ -5135,7 +5612,7 @@ describe('client API', function() {
 
       var client = new Client();
 
-      var _f = sandbox.stub(client, '_fetchLatestNotifications', function(interval, cb) {
+      var _f = sandbox.stub(client, '_fetchLatestNotifications').callsFake(function(interval, cb) {
         cb(new Errors.NOT_AUTHORIZED);
       });
 
@@ -5169,15 +5646,15 @@ describe('client API', function() {
         var client = new Client();
         client.credentials = {};
 
-        var ow = sandbox.stub(client, 'openWallet', function(callback) {
+        var ow = sandbox.stub(client, 'openWallet').callsFake(function(callback) {
           callback(new Error());
         });
 
-        var ip = sandbox.stub(client, 'isPrivKeyExternal', function() {
+        var ip = sandbox.stub(client, 'isPrivKeyExternal').callsFake(function() {
           return false;
         });
 
-        var aa = sandbox.stub(client, 'addAccess', function(options, callback) {
+        var aa = sandbox.stub(client, 'addAccess').callsFake(function(options, callback) {
           callback(new Error());
         });
 
